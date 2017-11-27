@@ -12,6 +12,10 @@ var config = {
     name: 'test_bucket',
     password: '',
     operationTimeout: 60 * 1000
+  },
+  auth: {
+    name: 'test',
+    password: 'test'
   }
 };
 
