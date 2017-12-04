@@ -3,7 +3,7 @@
     "__docId__": 0,
     "kind": "file",
     "name": "lib/couchbase3.js",
-    "content": "'use strict';\n\n/*!\n * Module dependencies\n */\nconst debug = require('debug')('loopback:connector:couchbase3');\n\nconst couchbase = require('couchbase');\nconst Promise = require('bluebird');\nconst uuid = require('uuid');\nconst utils = require('./utils');\n\nconst NoSQL = require('loopback-connector-nosql');\nconst Accessor = NoSQL.Accessor;\n\n// The default design documents.\nconst mapByModelName = `function(doc, meta) {\n  if (doc._type) {\n    emit(doc._type, null);\n  }\n}`;\nconst defaultDesignDocs = {\n  connector: {\n    views: {\n      byModelName: {\n        map: mapByModelName\n      }\n    }\n  }\n};\n\n/**\n * The constructor for Couchbase connector\n *\n * @param {Object} settings The settings object\n * @param {DataSource} dataSource The data source instance\n * @constructor\n */\nclass Couchbase extends NoSQL {\n\n  /**\n   * ID type.\n   */\n  getDefaultIdType(prop) {\n    return String;\n  }\n\n  /**\n   * Connect to Couchbase\n   */\n  _connect(settings, database) {\n    // Cluster.\n    if (settings.cluster == null) {\n      settings.cluster = {};\n    }\n    if (settings.cluster.url == null) {\n      debug('Cluster URL settings missing; trying default');\n      settings.cluster.url = 'couchbase://localhost';\n    }\n    if (settings.cluster.options == null) {\n      settings.cluster.options = {};\n    }\n    // Bucket.\n    if (settings.bucket == null) {\n      settings.bucket = {};\n    }\n    if (settings.bucket.name == null) {\n      debug('Bucket name settings missing; trying default');\n      settings.bucket.name = 'default';\n    }\n    if (settings.bucket.password == null) {\n      settings.bucket.password = '';\n    }\n    // Cluster.\n    this._cluster = Promise.resolve(new couchbase.Cluster(settings.cluster.url, settings.cluster.options))\n      .then(utils.promisifyAllResolveWithReturn);\n    // A connection is established when a bucket is open.\n    // @see http://developer.couchbase.com/documentation/server/4.0/sdks/node-2.0/performance-tuning.html\n    return this._cluster.call('openBucketAsync', settings.bucket.name, settings.bucket.password)\n      .then((bucket) => {\n        if (settings.bucket.operationTimeout) {\n          bucket.operationTimeout = settings.bucket.operationTimeout;\n        }\n        return bucket;\n      })\n      .then(Promise.promisifyAll);\n  }\n\n  /**\n   * Disconnect from Couchbase\n   */\n  _disconnect(bucket) {\n    // Cleanup.\n    this._cluster = null;\n    this._manager = null;\n    // Disconnect.\n    return bucket.disconnect();\n  }\n\n  /**\n   * Ping db server.\n   */\n  ping(callback) {\n    let promise;\n    if (this._cluster == null) {\n      promise = Promise.reject(new Error('not connected'));\n    } else {\n      promise = this.connect().call('getAsync', '1').return(true).catch(function(err) {\n        if (err.message === 'The key does not exist on the server') {\n          return true;\n        }\n        return Promise.reject(err);\n      });\n    }\n    return promise.asCallback(callback);\n  }\n\n  /**\n   * ViewQuery APIs.\n   */\n\n  /**\n   * Shortcut.\n   */\n  view(designDoc, viewName, options) {\n    return this.runViewQuery(this.newViewQuery(designDoc, viewName, options));\n  }\n\n  /**\n   * Shortcut.\n   */\n  runViewQuery(query, params) {\n    return this.connect().call('queryAsync', query, params);\n  }\n\n  /**\n   * Build a new view query.\n   *\n   * @see http://docs.couchbase.com/sdk-api/couchbase-node-client-2.1.2/ViewQuery.html\n   * @param  {String} designDoc\n   * @param  {String} viewName\n   * @param  {Object} options\n   * @return {Object}\n   */\n  newViewQuery(designDoc, viewName, options) {\n    const ViewQuery = couchbase.ViewQuery;\n    // With some defaults.\n    let query = ViewQuery.from(designDoc, viewName)\n      .on_error(ViewQuery.ErrorMode.STOP)\n      .order(ViewQuery.Order.ASCENDING)\n      .stale(ViewQuery.Update.BEFORE);\n\n    if (options == null) {\n      return query;\n    }\n    // The SDK made it easier for some options formats.\n    // Call.\n    [\n      'stale', 'order', 'group', 'group_level', 'key', 'keys', 'include_docs', 'full_set', 'on_error', 'limit'\n    ].forEach((key) => {\n      if (options[key] != null) {\n        query = query[key].call(query, options[key]);\n        delete options[key];\n      }\n    });\n    // Apply.\n    ['range', 'id_range'].forEach((key) => {\n      if (options[key] != null) {\n        query = query[key].apply(query, options[key]);\n        delete options[key];\n      }\n    });\n    query = query.custom(options);\n    return query;\n  }\n\n  /**\n   * Bucket Manager APIs.\n   */\n\n  /**\n   * You don't need to use this directly usually. Use the APIs below.\n   *\n   * @private\n   */\n  manager() {\n    // Only one manager is needed.\n    if (this._manager == null) {\n      this._manager = this.connect().call('manager').then(Promise.promisifyAll);\n    };\n    return this._manager;\n  }\n\n  /**\n   * Shortcut.\n   */\n  getDesignDocument(name) {\n    return this.manager().call('getDesignDocumentAsync', name);\n  }\n\n  /**\n   * Shortcut.\n   */\n  getDesignDocuments() {\n    return this.manager().call('getDesignDocumentsAsync');\n  }\n\n  /**\n   * Shortcut.\n   */\n  insertDesignDocument(name, data) {\n    return this.manager().call('insertDesignDocumentAsync', name, data);\n  }\n\n  /**\n   * Shortcut.\n   */\n  removeDesignDocument(name) {\n    return this.manager().call('removeDesignDocumentAsync', name);\n  }\n\n  /**\n   * Shortcut.\n   */\n  upsertDesignDocument(name, data) {\n    return this.manager().call('upsertDesignDocumentAsync', name, data);\n  }\n\n  /**\n   * Cluster Manager APIs.\n   */\n\n  clusterManager(username, password) {\n    // Only one manager is needed.\n    if (this._clusterManager == null) {\n      this._clusterManager = this._cluster.call('manager', username, password).then(Promise.promisifyAll);\n    };\n    return this._clusterManager;\n  }\n\n  /**\n   * Operation hooks.\n   */\n\n  /**\n   * Implement `autoupdate()`.\n   *\n   * @see `DataSource.prototype.autoupdate()`\n   */\n  autoupdate(models, callback) {\n    debug('autoupdate', this.settings);\n    // Create views.\n    let designDocs = defaultDesignDocs;\n    if (this.settings.designDocs) {\n      designDocs = Object.assign({}, designDocs, this.settings.designDocs);\n    }\n    let promise = Promise.resolve(true);\n    for (let name in designDocs) {\n      promise = promise.then(() => {\n        return this.upsertDesignDocument(name, designDocs[name]).then((res) => {\n          debug('created design document', name, designDocs[name], res);\n          return res;\n        });\n      });\n    }\n    return promise.asCallback(callback);\n  }\n\n  /**\n   * Implement `automigrate()`.\n   *\n   * @see `DataSource.prototype.automigrate()`\n   *\n   * Not really useful. Usually we manage databases in other ways.\n   */\n  // automigrate(models, callback) {\n  //   debug('automigrate', this.settings.database);\n  // }\n\n}\n\n/**\n * Implement Accessor.\n */\nclass CouchbaseAccessor extends Accessor {\n\n  /**\n   * Save data to DB without a given id.\n   *\n   * Result is a promise with `[id, rev]` or an error.\n   */\n  postWithoutId(data, options) {\n    // Generate ID.\n    const id = uuid.v4();\n    return this.postWithId(id, data, options);\n  }\n\n  /**\n   * Save data to DB with a given id.\n   *\n   * Result is a promise with `[id, rev]` or an error.\n   */\n  postWithId(id, data, options) {\n    // Result need to be `id` and `res`.\n    return this.connection.call('insertAsync', id, data, options).then((res) => {\n      return [id, res.cas];\n    });\n  }\n\n  /**\n   * Save data to DB with a given id.\n   *\n   * Result is a promise with `[id, rev]` or an error.\n   */\n  putWithId(id, data, options) {\n    return this.connection.call('replaceAsync', id, data, options).then((res) => {\n      return [id, res.cas];\n    });\n  }\n\n  /**\n   * Destroy data from DB by id.\n   *\n   * Result is a promise with whatever or an error.\n   */\n  destroyById(id, options) {\n    return this.connection.call('removeAsync', id, options).return(true).catchReturn(false);\n  }\n\n  /**\n   * Find data from DB by id.\n   *\n   * Result is a promise with the data or an error.\n   */\n  findById(id, options) {\n    return this.connection.call('getAsync', id, options).then(this.unpackRes).then((data) => {\n      if (data == null) {\n        return Promise.reject(httpError(404));\n      }\n      return data;\n    });\n  }\n\n  /**\n   * Find all data from DB for a model.\n   *\n   * Result is a promise with an array of 0 to many `[id, data]`.\n   */\n  findAll(options) {\n    return this.connector.view('connector', 'byModelName', {\n      key: this.modelName\n    }).map((res) => {\n      return Promise.join(res.id, this.findById(res.id, options), (id, value) => {\n        return [id, value];\n      });\n    });\n  }\n\n  /**\n   * Convert data from model to DB format.\n   */\n  forDb(data) {\n    data = super.forDb(data);\n    // Save the model name.\n    data._type = this.modelName;\n    return data;\n  }\n\n  /**\n   * Convert data from DB format to model.\n   */\n  fromDb(data) {\n    data = super.fromDb(data);\n    // Remove DB only data.\n    if (data._type != null) {\n      delete data._type;\n    }\n    return data;\n  }\n\n  /**\n   * Helper.\n   *\n   * @param  {Object} data What the Bucket would return with the OpCallback()\n   * @return {Promise}     The unpacked data\n   */\n  unpackRes(data) {\n    // CAS is required.\n    if (data == null || data.cas == null) {\n      return Promise.resolve(null);\n    }\n    let unpacked = {};\n    // Values are extracted to the top level.\n    if (data.value != null) {\n      Object.assign(unpacked, data.value);\n    }\n    unpacked._cas = data.cas;\n    return Promise.resolve(unpacked);\n  }\n\n}\n\n// Export initializer.\nexports.initialize = NoSQL.initializer('couchbase3', Couchbase, CouchbaseAccessor);\n\n// Export classes.\nexports.Couchbase = Couchbase;\nexports.CouchbaseAccessor = CouchbaseAccessor;\n",
+    "content": "'use strict';\n\n/*!\n * Module dependencies\n */\nconst debug = require('debug')('loopback:connector:couchbase3');\n\nconst couchbase = require('couchbase');\nconst Promise = require('bluebird');\nconst uuid = require('uuid');\nconst utils = require('./utils');\n\nconst NoSQL = require('loopback-connector-nosql');\nconst Accessor = NoSQL.Accessor;\n\n// The default design documents.\nconst mapByModelName = `function(doc, meta) {\n  if (doc._type) {\n    emit(doc._type, null);\n  }\n}`;\nconst defaultDesignDocs = {\n  connector: {\n    views: {\n      byModelName: {\n        map: mapByModelName\n      }\n    }\n  }\n};\n\n/**\n * The constructor for Couchbase connector\n *\n * @param {Object} settings The settings object\n * @param {DataSource} dataSource The data source instance\n * @constructor\n */\nclass Couchbase extends NoSQL {\n\n  /**\n   * ID type.\n   *\n   * @param  {type} prop\n   * @return {String}\n   */\n  getDefaultIdType(prop) {\n    return String;\n  }\n\n  /**\n   * Connect to Couchbase\n   *\n   * @param  {type} settings\n   * @param  {type} database\n   * @return {type}\n   */\n  _connect(settings, database) {\n    // Cluster.\n    if (settings.cluster == null) {\n      settings.cluster = {};\n    }\n    if (settings.cluster.url == null) {\n      debug('Cluster URL settings missing; trying default');\n      settings.cluster.url = 'couchbase://localhost';\n    }\n    if (settings.cluster.options == null) {\n      settings.cluster.options = {};\n    }\n    // Bucket.\n    if (settings.bucket == null) {\n      settings.bucket = {};\n    }\n    if (settings.bucket.name == null) {\n      debug('Bucket name settings missing; trying default');\n      settings.bucket.name = 'default';\n    }\n    if (settings.bucket.password == null) {\n      settings.bucket.password = '';\n    }\n    // Cluster.\n    this._cluster = Promise.resolve(new couchbase.Cluster(settings.cluster.url, settings.cluster.options))\n      .then(utils.promisifyAllResolveWithReturn);\n    // A connection is established when a bucket is open.\n    // @see http://developer.couchbase.com/documentation/server/4.0/sdks/node-2.0/performance-tuning.html\n    return this._cluster.call('openBucketAsync', settings.bucket.name, settings.bucket.password)\n      .then((bucket) => {\n        if (settings.bucket.operationTimeout) {\n          bucket.operationTimeout = settings.bucket.operationTimeout;\n        }\n        return bucket;\n      })\n      .then(Promise.promisifyAll);\n  }\n\n  /**\n   * Disconnect from Couchbase\n   *\n   * @param  {type} bucket\n   * @return {type}\n   */\n  _disconnect(bucket) {\n    // Cleanup.\n    this._cluster = null;\n    this._manager = null;\n    // Disconnect.\n    return bucket.disconnect();\n  }\n\n  /**\n   * Ping couchbase server.\n   *\n   * @param  {type} callback\n   * @return {type}\n   */\n  ping(callback) {\n    let promise;\n    if (this._cluster == null) {\n      promise = Promise.reject(new Error('not connected'));\n    } else {\n      promise = this.connect().call('getAsync', '1').return(true).catch(function(err) {\n        if (err.message === 'The key does not exist on the server') {\n          return true;\n        }\n        return Promise.reject(err);\n      });\n    }\n    return promise.asCallback(callback);\n  }\n\n  /**\n   * ViewQuery APIs.\n   */\n\n  /**\n   * Shortcut.\n   *\n   * @param  {type} designDoc\n   * @param  {type} viewName\n   * @param  {type} options\n   * @return {type}\n   */\n  view(designDoc, viewName, options) {\n    return this.runViewQuery(this.newViewQuery(designDoc, viewName, options));\n  }\n\n  /**\n   * Shortcut.\n   *\n   * @param  {type} query\n   * @param  {type} params\n   * @return {type}\n   */\n  runViewQuery(query, params) {\n    return this.connect().call('queryAsync', query, params);\n  }\n\n  /**\n   * Build a new view query.\n   *\n   * @see http://docs.couchbase.com/sdk-api/couchbase-node-client-2.1.2/ViewQuery.html\n   * @param  {String} designDoc\n   * @param  {String} viewName\n   * @param  {Object} options\n   * @return {Object}\n   */\n  newViewQuery(designDoc, viewName, options) {\n    const ViewQuery = couchbase.ViewQuery;\n    // With some defaults.\n    let query = ViewQuery.from(designDoc, viewName)\n      .on_error(ViewQuery.ErrorMode.STOP)\n      .order(ViewQuery.Order.ASCENDING)\n      .stale(ViewQuery.Update.BEFORE);\n\n    if (options == null) {\n      return query;\n    }\n    // The SDK made it easier for some options formats.\n    // Call.\n    [\n      'stale', 'order', 'group', 'group_level', 'key', 'keys', 'include_docs', 'full_set', 'on_error', 'limit'\n    ].forEach((key) => {\n      if (options[key] != null) {\n        query = query[key].call(query, options[key]);\n        delete options[key];\n      }\n    });\n    // Apply.\n    ['range', 'id_range'].forEach((key) => {\n      if (options[key] != null) {\n        query = query[key].apply(query, options[key]);\n        delete options[key];\n      }\n    });\n    query = query.custom(options);\n    return query;\n  }\n\n  /**\n   * Bucket Manager APIs.\n   */\n\n  /**\n   * You don't need to use this directly usually. Use the APIs below.\n   *\n   * @private\n   */\n  manager() {\n    // Only one manager is needed.\n    if (this._manager == null) {\n      this._manager = this.connect().call('manager').then(Promise.promisifyAll);\n    };\n    return this._manager;\n  }\n\n  /**\n   * Shortcut.\n   *\n   * @param  {type} name\n   * @return {type}\n   */\n  getDesignDocument(name) {\n    return this.manager().call('getDesignDocumentAsync', name);\n  }\n\n  /**\n   * Shortcut.\n   *\n   * @return {type}\n   */\n  getDesignDocuments() {\n    return this.manager().call('getDesignDocumentsAsync');\n  }\n\n  /**\n   * Shortcut.\n   *\n   * @param  {type} name\n   * @param  {type} data\n   * @return {type}\n   * */\n  insertDesignDocument(name, data) {\n    return this.manager().call('insertDesignDocumentAsync', name, data);\n  }\n\n  /**\n   * Shortcut.\n   *\n   * @param  {type} name\n   * @return {type}\n   */\n  removeDesignDocument(name) {\n    return this.manager().call('removeDesignDocumentAsync', name);\n  }\n\n  /**\n   * Shortcut.\n   *\n   * @param  {type} name\n   * @param  {type} data\n   * @return {type}\n   */\n  upsertDesignDocument(name, data) {\n    return this.manager().call('upsertDesignDocumentAsync', name, data);\n  }\n\n  /**\n   * Cluster Manager APIs.\n   *\n   * @param  {type} username\n   * @param  {type} password\n   * @return {type}\n   */\n  clusterManager(username, password) {\n    // Only one manager is needed.\n    if (this._clusterManager == null) {\n      this._clusterManager = this._cluster.call('manager', username, password).then(Promise.promisifyAll);\n    };\n    return this._clusterManager;\n  }\n\n  /**\n   * Operation hooks.\n   */\n\n  /**\n   * Implement `autoupdate()`.\n   *\n   * @see `DataSource.prototype.autoupdate()`\n   */\n  autoupdate(models, callback) {\n    debug('autoupdate', this.settings);\n    // Create views.\n    let designDocs = defaultDesignDocs;\n    if (this.settings.designDocs) {\n      designDocs = Object.assign({}, designDocs, this.settings.designDocs);\n    }\n    let promise = Promise.resolve(true);\n    for (let name in designDocs) {\n      promise = promise.then(() => {\n        return this.upsertDesignDocument(name, designDocs[name]).then((res) => {\n          debug('created design document', name, designDocs[name], res);\n          return res;\n        });\n      });\n    }\n    return promise.asCallback(callback);\n  }\n\n  /**\n   * Implement `automigrate()`.\n   *\n   * @see `DataSource.prototype.automigrate()`\n   *\n   * Not really useful. Usually we manage databases in other ways.\n   */\n  // automigrate(models, callback) {\n  //   debug('automigrate', this.settings.database);\n  // }\n\n}\n\n/**\n * Implement Accessor.\n */\nclass CouchbaseAccessor extends Accessor {\n\n  /**\n   * Save data to DB without a given id.\n   *\n   * @param  {type} data\n   * @param  {type} options\n   * @return {Promise}      Result is a promise with `[id, rev]` or an error.\n   */\n  postWithoutId(data, options) {\n    // Generate ID.\n    const id = uuid.v4();\n    return this.postWithId(id, data, options);\n  }\n\n  /**\n   * Save data to DB with a given id.\n   *\n   * @param  {type} id\n   * @param  {type} data\n   * @param  {type} options\n   * @return {Promise}      Result is a promise with `[id, rev]` or an error.\n   */\n  postWithId(id, data, options) {\n    // Result need to be `id` and `res`.\n    return this.connection.call('insertAsync', id, data, options).then((res) => {\n      return [id, res.cas];\n    });\n  }\n\n  /**\n   * Save data to DB with a given id.\n   *\n   * @param  {type} id\n   * @param  {type} data\n   * @param  {type} options\n   * @return {Promise}      Result is a promise with `[id, rev]` or an error.\n   */\n  putWithId(id, data, options) {\n    return this.connection.call('replaceAsync', id, data, options).then((res) => {\n      return [id, res.cas];\n    });\n  }\n\n  /**\n   * Destroy data from DB by id.\n   *\n   * @param  {type} id\n   * @param  {type} options\n   * @return {Promise}      Result is a promise with whatever or an error.\n   */\n  destroyById(id, options) {\n    return this.connection.call('removeAsync', id, options).return(true).catchReturn(false);\n  }\n\n  /**\n   * Find data from DB by id.\n   *\n   * @param  {type} id\n   * @param  {type} options\n   * @return {Promise}      Result is a promise with the data or an error.\n   */\n  findById(id, options) {\n    return this.connection.call('getAsync', id, options).then(this.unpackRes).then((data) => {\n      if (data == null) {\n        return Promise.reject(httpError(404));\n      }\n      return data;\n    });\n  }\n\n  /**\n   * Find all data from DB for a model.\n   *\n   * @param  {type} options\n   * @return {Promise}      Result is a promise with an array of 0 to many `[id, data]`.\n   */\n  findAll(options) {\n    return this.connector.view('connector', 'byModelName', {\n      key: this.modelName\n    }).map((res) => {\n      return Promise.join(res.id, this.findById(res.id, options), (id, value) => {\n        return [id, value];\n      });\n    });\n  }\n\n  /**\n   * Convert data from model to DB format.\n   *\n   * @param  {type} data\n   * @return {type}\n   */\n  forDb(data) {\n    data = super.forDb(data);\n    // Save the model name.\n    data._type = this.modelName;\n    return data;\n  }\n\n\n  /**\n   * Convert data from DB format to model.\n   *\n   * @param  {type} data\n   * @return {type}\n   */\n  fromDb(data) {\n    data = super.fromDb(data);\n    // Remove DB only data.\n    if (data._type != null) {\n      delete data._type;\n    }\n    return data;\n  }\n\n  /**\n   * Helper.\n   *\n   * @param  {Object} data What the Bucket would return with the OpCallback()\n   * @return {Promise}     The unpacked data\n   */\n  unpackRes(data) {\n    // CAS is required.\n    if (data == null || data.cas == null) {\n      return Promise.resolve(null);\n    }\n    let unpacked = {};\n    // Values are extracted to the top level.\n    if (data.value != null) {\n      Object.assign(unpacked, data.value);\n    }\n    unpacked._cas = data.cas;\n    return Promise.resolve(unpacked);\n  }\n\n}\n\n// Export initializer.\nexports.initialize = NoSQL.initializer('couchbase3', Couchbase, CouchbaseAccessor);\n\n// Export classes.\nexports.Couchbase = Couchbase;\nexports.CouchbaseAccessor = CouchbaseAccessor;\n",
     "static": true,
     "longname": "lib/couchbase3.js",
     "access": null,
@@ -301,19 +301,26 @@
     "longname": "lib/couchbase3.js~Couchbase#getDefaultIdType",
     "access": null,
     "description": "ID type.",
-    "lineNumber": 44,
+    "lineNumber": 47,
     "params": [
       {
-        "name": "prop",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "prop",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "String"
+      ],
+      "spread": false,
+      "description": ""
     }
   },
   {
@@ -327,25 +334,36 @@
     "longname": "lib/couchbase3.js~Couchbase#_connect",
     "access": null,
     "description": "Connect to Couchbase",
-    "lineNumber": 51,
+    "lineNumber": 58,
     "params": [
       {
-        "name": "settings",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "settings",
+        "description": ""
       },
       {
-        "name": "database",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "database",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "type"
+      ],
+      "spread": false,
+      "description": ""
     }
   },
   {
@@ -357,7 +375,7 @@
     "longname": "lib/couchbase3.js~Couchbase#_cluster",
     "access": null,
     "description": null,
-    "lineNumber": 75,
+    "lineNumber": 82,
     "undocument": true,
     "unknown": [
       {
@@ -382,19 +400,26 @@
     "longname": "lib/couchbase3.js~Couchbase#_disconnect",
     "access": null,
     "description": "Disconnect from Couchbase",
-    "lineNumber": 92,
+    "lineNumber": 102,
     "params": [
       {
-        "name": "bucket",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "bucket",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "type"
+      ],
+      "spread": false,
+      "description": ""
     }
   },
   {
@@ -406,7 +431,7 @@
     "longname": "lib/couchbase3.js~Couchbase#_cluster",
     "access": null,
     "description": null,
-    "lineNumber": 94,
+    "lineNumber": 104,
     "undocument": true,
     "unknown": [
       {
@@ -429,7 +454,7 @@
     "longname": "lib/couchbase3.js~Couchbase#_manager",
     "access": null,
     "description": null,
-    "lineNumber": 95,
+    "lineNumber": 105,
     "undocument": true,
     "unknown": [
       {
@@ -453,20 +478,27 @@
     "static": false,
     "longname": "lib/couchbase3.js~Couchbase#ping",
     "access": null,
-    "description": "Ping db server.",
-    "lineNumber": 103,
+    "description": "Ping couchbase server.",
+    "lineNumber": 116,
     "params": [
       {
-        "name": "callback",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "callback",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "type"
+      ],
+      "spread": false,
+      "description": ""
     }
   },
   {
@@ -480,31 +512,46 @@
     "longname": "lib/couchbase3.js~Couchbase#view",
     "access": null,
     "description": "Shortcut.",
-    "lineNumber": 125,
+    "lineNumber": 143,
     "params": [
       {
+        "nullable": null,
+        "types": [
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
         "name": "designDoc",
-        "types": [
-          "*"
-        ]
+        "description": ""
       },
       {
+        "nullable": null,
+        "types": [
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
         "name": "viewName",
-        "types": [
-          "*"
-        ]
+        "description": ""
       },
       {
-        "name": "options",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "options",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "type"
+      ],
+      "spread": false,
+      "description": ""
     }
   },
   {
@@ -518,25 +565,36 @@
     "longname": "lib/couchbase3.js~Couchbase#runViewQuery",
     "access": null,
     "description": "Shortcut.",
-    "lineNumber": 132,
+    "lineNumber": 154,
     "params": [
       {
-        "name": "query",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "query",
+        "description": ""
       },
       {
-        "name": "params",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "params",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "type"
+      ],
+      "spread": false,
+      "description": ""
     }
   },
   {
@@ -553,7 +611,7 @@
     "see": [
       "http://docs.couchbase.com/sdk-api/couchbase-node-client-2.1.2/ViewQuery.html"
     ],
-    "lineNumber": 145,
+    "lineNumber": 167,
     "params": [
       {
         "nullable": null,
@@ -606,7 +664,7 @@
     "longname": "lib/couchbase3.js~Couchbase#manager",
     "access": "private",
     "description": "You don't need to use this directly usually. Use the APIs below.",
-    "lineNumber": 186,
+    "lineNumber": 208,
     "params": [],
     "return": {
       "types": [
@@ -623,7 +681,7 @@
     "longname": "lib/couchbase3.js~Couchbase#_manager",
     "access": null,
     "description": null,
-    "lineNumber": 189,
+    "lineNumber": 211,
     "undocument": true,
     "unknown": [
       {
@@ -648,19 +706,26 @@
     "longname": "lib/couchbase3.js~Couchbase#getDesignDocument",
     "access": null,
     "description": "Shortcut.",
-    "lineNumber": 197,
+    "lineNumber": 222,
     "params": [
       {
-        "name": "name",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "name",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "type"
+      ],
+      "spread": false,
+      "description": ""
     }
   },
   {
@@ -674,12 +739,15 @@
     "longname": "lib/couchbase3.js~Couchbase#getDesignDocuments",
     "access": null,
     "description": "Shortcut.",
-    "lineNumber": 204,
+    "lineNumber": 231,
     "params": [],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "type"
+      ],
+      "spread": false,
+      "description": ""
     }
   },
   {
@@ -693,25 +761,36 @@
     "longname": "lib/couchbase3.js~Couchbase#insertDesignDocument",
     "access": null,
     "description": "Shortcut.",
-    "lineNumber": 211,
+    "lineNumber": 242,
     "params": [
       {
-        "name": "name",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "name",
+        "description": ""
       },
       {
-        "name": "data",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "data",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "type"
+      ],
+      "spread": false,
+      "description": ""
     }
   },
   {
@@ -725,19 +804,26 @@
     "longname": "lib/couchbase3.js~Couchbase#removeDesignDocument",
     "access": null,
     "description": "Shortcut.",
-    "lineNumber": 218,
+    "lineNumber": 252,
     "params": [
       {
-        "name": "name",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "name",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "type"
+      ],
+      "spread": false,
+      "description": ""
     }
   },
   {
@@ -751,25 +837,36 @@
     "longname": "lib/couchbase3.js~Couchbase#upsertDesignDocument",
     "access": null,
     "description": "Shortcut.",
-    "lineNumber": 225,
+    "lineNumber": 263,
     "params": [
       {
-        "name": "name",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "name",
+        "description": ""
       },
       {
-        "name": "data",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "data",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "type"
+      ],
+      "spread": false,
+      "description": ""
     }
   },
   {
@@ -783,25 +880,36 @@
     "longname": "lib/couchbase3.js~Couchbase#clusterManager",
     "access": null,
     "description": "Cluster Manager APIs.",
-    "lineNumber": 233,
+    "lineNumber": 274,
     "params": [
       {
-        "name": "username",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "username",
+        "description": ""
       },
       {
-        "name": "password",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "password",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "type"
+      ],
+      "spread": false,
+      "description": ""
     }
   },
   {
@@ -813,7 +921,7 @@
     "longname": "lib/couchbase3.js~Couchbase#_clusterManager",
     "access": null,
     "description": null,
-    "lineNumber": 236,
+    "lineNumber": 277,
     "undocument": true,
     "unknown": [
       {
@@ -841,7 +949,7 @@
     "see": [
       "`DataSource.prototype.autoupdate()`"
     ],
-    "lineNumber": 250,
+    "lineNumber": 291,
     "params": [
       {
         "name": "models",
@@ -874,7 +982,7 @@
     "importPath": "loopback-connector-couchbase3/lib/couchbase3.js",
     "importStyle": null,
     "description": "Implement Accessor.",
-    "lineNumber": 285,
+    "lineNumber": 326,
     "interface": false,
     "extends": [
       "Accessor"
@@ -890,26 +998,37 @@
     "static": false,
     "longname": "lib/couchbase3.js~CouchbaseAccessor#postWithoutId",
     "access": null,
-    "description": "Save data to DB without a given id.\n\nResult is a promise with `[id, rev]` or an error.",
-    "lineNumber": 292,
+    "description": "Save data to DB without a given id.",
+    "lineNumber": 335,
     "params": [
       {
-        "name": "data",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "data",
+        "description": ""
       },
       {
-        "name": "options",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "options",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "Promise"
+      ],
+      "spread": false,
+      "description": "Result is a promise with `[id, rev]` or an error."
     }
   },
   {
@@ -922,32 +1041,47 @@
     "static": false,
     "longname": "lib/couchbase3.js~CouchbaseAccessor#postWithId",
     "access": null,
-    "description": "Save data to DB with a given id.\n\nResult is a promise with `[id, rev]` or an error.",
-    "lineNumber": 303,
+    "description": "Save data to DB with a given id.",
+    "lineNumber": 349,
     "params": [
       {
+        "nullable": null,
+        "types": [
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
         "name": "id",
-        "types": [
-          "*"
-        ]
+        "description": ""
       },
       {
+        "nullable": null,
+        "types": [
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
         "name": "data",
-        "types": [
-          "*"
-        ]
+        "description": ""
       },
       {
-        "name": "options",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "options",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "Promise"
+      ],
+      "spread": false,
+      "description": "Result is a promise with `[id, rev]` or an error."
     }
   },
   {
@@ -960,32 +1094,47 @@
     "static": false,
     "longname": "lib/couchbase3.js~CouchbaseAccessor#putWithId",
     "access": null,
-    "description": "Save data to DB with a given id.\n\nResult is a promise with `[id, rev]` or an error.",
-    "lineNumber": 315,
+    "description": "Save data to DB with a given id.",
+    "lineNumber": 364,
     "params": [
       {
+        "nullable": null,
+        "types": [
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
         "name": "id",
-        "types": [
-          "*"
-        ]
+        "description": ""
       },
       {
+        "nullable": null,
+        "types": [
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
         "name": "data",
-        "types": [
-          "*"
-        ]
+        "description": ""
       },
       {
-        "name": "options",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "options",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "Promise"
+      ],
+      "spread": false,
+      "description": "Result is a promise with `[id, rev]` or an error."
     }
   },
   {
@@ -998,26 +1147,37 @@
     "static": false,
     "longname": "lib/couchbase3.js~CouchbaseAccessor#destroyById",
     "access": null,
-    "description": "Destroy data from DB by id.\n\nResult is a promise with whatever or an error.",
-    "lineNumber": 326,
+    "description": "Destroy data from DB by id.",
+    "lineNumber": 377,
     "params": [
       {
-        "name": "id",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "id",
+        "description": ""
       },
       {
-        "name": "options",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "options",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "Promise"
+      ],
+      "spread": false,
+      "description": "Result is a promise with whatever or an error."
     }
   },
   {
@@ -1030,26 +1190,37 @@
     "static": false,
     "longname": "lib/couchbase3.js~CouchbaseAccessor#findById",
     "access": null,
-    "description": "Find data from DB by id.\n\nResult is a promise with the data or an error.",
-    "lineNumber": 335,
+    "description": "Find data from DB by id.",
+    "lineNumber": 388,
     "params": [
       {
-        "name": "id",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "id",
+        "description": ""
       },
       {
-        "name": "options",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "options",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "Promise"
+      ],
+      "spread": false,
+      "description": "Result is a promise with the data or an error."
     }
   },
   {
@@ -1062,20 +1233,27 @@
     "static": false,
     "longname": "lib/couchbase3.js~CouchbaseAccessor#findAll",
     "access": null,
-    "description": "Find all data from DB for a model.\n\nResult is a promise with an array of 0 to many `[id, data]`.",
-    "lineNumber": 349,
+    "description": "Find all data from DB for a model.",
+    "lineNumber": 403,
     "params": [
       {
-        "name": "options",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "options",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "Promise"
+      ],
+      "spread": false,
+      "description": "Result is a promise with an array of 0 to many `[id, data]`."
     }
   },
   {
@@ -1089,19 +1267,26 @@
     "longname": "lib/couchbase3.js~CouchbaseAccessor#forDb",
     "access": null,
     "description": "Convert data from model to DB format.",
-    "lineNumber": 362,
+    "lineNumber": 419,
     "params": [
       {
-        "name": "data",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "data",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "type"
+      ],
+      "spread": false,
+      "description": ""
     }
   },
   {
@@ -1115,19 +1300,26 @@
     "longname": "lib/couchbase3.js~CouchbaseAccessor#fromDb",
     "access": null,
     "description": "Convert data from DB format to model.",
-    "lineNumber": 372,
+    "lineNumber": 433,
     "params": [
       {
-        "name": "data",
+        "nullable": null,
         "types": [
-          "*"
-        ]
+          "type"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "data",
+        "description": ""
       }
     ],
     "return": {
+      "nullable": null,
       "types": [
-        "*"
-      ]
+        "type"
+      ],
+      "spread": false,
+      "description": ""
     }
   },
   {
@@ -1141,7 +1333,7 @@
     "longname": "lib/couchbase3.js~CouchbaseAccessor#unpackRes",
     "access": null,
     "description": "Helper.",
-    "lineNumber": 387,
+    "lineNumber": 448,
     "params": [
       {
         "nullable": null,

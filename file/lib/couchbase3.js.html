@@ -35,16 +35,6 @@
   <li data-ice="doc"><span data-ice="kind" class="kind-class">C</span><span data-ice="name"><span><a href="class/lib/couchbase3.js~Couchbase.html">Couchbase</a></span></span></li>
 <li data-ice="doc"><span data-ice="kind" class="kind-class">C</span><span data-ice="name"><span><a href="class/lib/couchbase3.js~CouchbaseAccessor.html">CouchbaseAccessor</a></span></span></li>
 <li data-ice="doc"><span data-ice="kind" class="kind-function">F</span><span data-ice="name"><span><a href="function/index.html#static-function-promisifyAllResolveWithReturn">promisifyAllResolveWithReturn</a></span></span></li>
-<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-Accessor">Accessor</a></span></span></li>
-<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-NoSQL">NoSQL</a></span></span></li>
-<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-Promise">Promise</a></span></span></li>
-<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-couchbase">couchbase</a></span></span></li>
-<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-debug">debug</a></span></span></li>
-<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-defaultDesignDocs">defaultDesignDocs</a></span></span></li>
-<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-mapByModelName">mapByModelName</a></span></span></li>
-<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-utils">utils</a></span></span></li>
-<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-uuid">uuid</a></span></span></li>
-<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-Promise">Promise</a></span></span></li>
 </ul>
 </div>
 </nav>
@@ -92,6 +82,9 @@ class Couchbase extends NoSQL {
 
   /**
    * ID type.
+   *
+   * @param  {type} prop
+   * @return {String}
    */
   getDefaultIdType(prop) {
     return String;
@@ -99,6 +92,10 @@ class Couchbase extends NoSQL {
 
   /**
    * Connect to Couchbase
+   *
+   * @param  {type} settings
+   * @param  {type} database
+   * @return {type}
    */
   _connect(settings, database) {
     // Cluster.
@@ -140,6 +137,9 @@ class Couchbase extends NoSQL {
 
   /**
    * Disconnect from Couchbase
+   *
+   * @param  {type} bucket
+   * @return {type}
    */
   _disconnect(bucket) {
     // Cleanup.
@@ -150,7 +150,10 @@ class Couchbase extends NoSQL {
   }
 
   /**
-   * Ping db server.
+   * Ping couchbase server.
+   *
+   * @param  {type} callback
+   * @return {type}
    */
   ping(callback) {
     let promise;
@@ -173,6 +176,11 @@ class Couchbase extends NoSQL {
 
   /**
    * Shortcut.
+   *
+   * @param  {type} designDoc
+   * @param  {type} viewName
+   * @param  {type} options
+   * @return {type}
    */
   view(designDoc, viewName, options) {
     return this.runViewQuery(this.newViewQuery(designDoc, viewName, options));
@@ -180,6 +188,10 @@ class Couchbase extends NoSQL {
 
   /**
    * Shortcut.
+   *
+   * @param  {type} query
+   * @param  {type} params
+   * @return {type}
    */
   runViewQuery(query, params) {
     return this.connect().call(&apos;queryAsync&apos;, query, params);
@@ -245,6 +257,9 @@ class Couchbase extends NoSQL {
 
   /**
    * Shortcut.
+   *
+   * @param  {type} name
+   * @return {type}
    */
   getDesignDocument(name) {
     return this.manager().call(&apos;getDesignDocumentAsync&apos;, name);
@@ -252,6 +267,8 @@ class Couchbase extends NoSQL {
 
   /**
    * Shortcut.
+   *
+   * @return {type}
    */
   getDesignDocuments() {
     return this.manager().call(&apos;getDesignDocumentsAsync&apos;);
@@ -259,13 +276,20 @@ class Couchbase extends NoSQL {
 
   /**
    * Shortcut.
-   */
+   *
+   * @param  {type} name
+   * @param  {type} data
+   * @return {type}
+   * */
   insertDesignDocument(name, data) {
     return this.manager().call(&apos;insertDesignDocumentAsync&apos;, name, data);
   }
 
   /**
    * Shortcut.
+   *
+   * @param  {type} name
+   * @return {type}
    */
   removeDesignDocument(name) {
     return this.manager().call(&apos;removeDesignDocumentAsync&apos;, name);
@@ -273,6 +297,10 @@ class Couchbase extends NoSQL {
 
   /**
    * Shortcut.
+   *
+   * @param  {type} name
+   * @param  {type} data
+   * @return {type}
    */
   upsertDesignDocument(name, data) {
     return this.manager().call(&apos;upsertDesignDocumentAsync&apos;, name, data);
@@ -280,8 +308,11 @@ class Couchbase extends NoSQL {
 
   /**
    * Cluster Manager APIs.
+   *
+   * @param  {type} username
+   * @param  {type} password
+   * @return {type}
    */
-
   clusterManager(username, password) {
     // Only one manager is needed.
     if (this._clusterManager == null) {
@@ -339,7 +370,9 @@ class CouchbaseAccessor extends Accessor {
   /**
    * Save data to DB without a given id.
    *
-   * Result is a promise with `[id, rev]` or an error.
+   * @param  {type} data
+   * @param  {type} options
+   * @return {Promise}      Result is a promise with `[id, rev]` or an error.
    */
   postWithoutId(data, options) {
     // Generate ID.
@@ -350,7 +383,10 @@ class CouchbaseAccessor extends Accessor {
   /**
    * Save data to DB with a given id.
    *
-   * Result is a promise with `[id, rev]` or an error.
+   * @param  {type} id
+   * @param  {type} data
+   * @param  {type} options
+   * @return {Promise}      Result is a promise with `[id, rev]` or an error.
    */
   postWithId(id, data, options) {
     // Result need to be `id` and `res`.
@@ -362,7 +398,10 @@ class CouchbaseAccessor extends Accessor {
   /**
    * Save data to DB with a given id.
    *
-   * Result is a promise with `[id, rev]` or an error.
+   * @param  {type} id
+   * @param  {type} data
+   * @param  {type} options
+   * @return {Promise}      Result is a promise with `[id, rev]` or an error.
    */
   putWithId(id, data, options) {
     return this.connection.call(&apos;replaceAsync&apos;, id, data, options).then((res) =&gt; {
@@ -373,7 +412,9 @@ class CouchbaseAccessor extends Accessor {
   /**
    * Destroy data from DB by id.
    *
-   * Result is a promise with whatever or an error.
+   * @param  {type} id
+   * @param  {type} options
+   * @return {Promise}      Result is a promise with whatever or an error.
    */
   destroyById(id, options) {
     return this.connection.call(&apos;removeAsync&apos;, id, options).return(true).catchReturn(false);
@@ -382,7 +423,9 @@ class CouchbaseAccessor extends Accessor {
   /**
    * Find data from DB by id.
    *
-   * Result is a promise with the data or an error.
+   * @param  {type} id
+   * @param  {type} options
+   * @return {Promise}      Result is a promise with the data or an error.
    */
   findById(id, options) {
     return this.connection.call(&apos;getAsync&apos;, id, options).then(this.unpackRes).then((data) =&gt; {
@@ -396,7 +439,8 @@ class CouchbaseAccessor extends Accessor {
   /**
    * Find all data from DB for a model.
    *
-   * Result is a promise with an array of 0 to many `[id, data]`.
+   * @param  {type} options
+   * @return {Promise}      Result is a promise with an array of 0 to many `[id, data]`.
    */
   findAll(options) {
     return this.connector.view(&apos;connector&apos;, &apos;byModelName&apos;, {
@@ -410,6 +454,9 @@ class CouchbaseAccessor extends Accessor {
 
   /**
    * Convert data from model to DB format.
+   *
+   * @param  {type} data
+   * @return {type}
    */
   forDb(data) {
     data = super.forDb(data);
@@ -418,8 +465,12 @@ class CouchbaseAccessor extends Accessor {
     return data;
   }
 
+
   /**
    * Convert data from DB format to model.
+   *
+   * @param  {type} data
+   * @return {type}
    */
   fromDb(data) {
     data = super.fromDb(data);

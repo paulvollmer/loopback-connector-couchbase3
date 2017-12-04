@@ -1,29 +1,17 @@
 {
-  "coverage": "70.58%",
-  "expectCount": 34,
+  "coverage": "100%",
+  "expectCount": 24,
   "actualCount": 24,
   "files": {
     "lib/couchbase3.js": {
-      "expectCount": 32,
+      "expectCount": 23,
       "actualCount": 23,
-      "undocumentLines": [
-        14,
-        13,
-        9,
-        8,
-        6,
-        22,
-        17,
-        11,
-        10
-      ]
+      "undocumentLines": []
     },
     "lib/utils.js": {
-      "expectCount": 2,
+      "expectCount": 1,
       "actualCount": 1,
-      "undocumentLines": [
-        3
-      ]
+      "undocumentLines": []
     }
   }
 }

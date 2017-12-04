@@ -1,11 +1,5 @@
 window.esdocSearchIndex = [
   [
-    "loopback-connector-couchbase3/lib/couchbase3.js~accessor",
-    "variable/index.html#static-variable-Accessor",
-    "<span>Accessor</span> <span class=\"search-result-import-path\">loopback-connector-couchbase3/lib/couchbase3.js</span>",
-    "variable"
-  ],
-  [
     "loopback-connector-couchbase3/lib/couchbase3.js~couchbase",
     "class/lib/couchbase3.js~Couchbase.html",
     "<span>Couchbase</span> <span class=\"search-result-import-path\">loopback-connector-couchbase3/lib/couchbase3.js</span>",
@@ -18,64 +12,10 @@ window.esdocSearchIndex = [
     "class"
   ],
   [
-    "loopback-connector-couchbase3/lib/couchbase3.js~nosql",
-    "variable/index.html#static-variable-NoSQL",
-    "<span>NoSQL</span> <span class=\"search-result-import-path\">loopback-connector-couchbase3/lib/couchbase3.js</span>",
-    "variable"
-  ],
-  [
-    "loopback-connector-couchbase3/lib/couchbase3.js~promise",
-    "variable/index.html#static-variable-Promise",
-    "<span>Promise</span> <span class=\"search-result-import-path\">loopback-connector-couchbase3/lib/couchbase3.js</span>",
-    "variable"
-  ],
-  [
-    "loopback-connector-couchbase3/lib/utils.js~promise",
-    "variable/index.html#static-variable-Promise",
-    "<span>Promise</span> <span class=\"search-result-import-path\">loopback-connector-couchbase3/lib/utils.js</span>",
-    "variable"
-  ],
-  [
-    "loopback-connector-couchbase3/lib/couchbase3.js~couchbase",
-    "variable/index.html#static-variable-couchbase",
-    "<span>couchbase</span> <span class=\"search-result-import-path\">loopback-connector-couchbase3/lib/couchbase3.js</span>",
-    "variable"
-  ],
-  [
-    "loopback-connector-couchbase3/lib/couchbase3.js~debug",
-    "variable/index.html#static-variable-debug",
-    "<span>debug</span> <span class=\"search-result-import-path\">loopback-connector-couchbase3/lib/couchbase3.js</span>",
-    "variable"
-  ],
-  [
-    "loopback-connector-couchbase3/lib/couchbase3.js~defaultdesigndocs",
-    "variable/index.html#static-variable-defaultDesignDocs",
-    "<span>defaultDesignDocs</span> <span class=\"search-result-import-path\">loopback-connector-couchbase3/lib/couchbase3.js</span>",
-    "variable"
-  ],
-  [
-    "loopback-connector-couchbase3/lib/couchbase3.js~mapbymodelname",
-    "variable/index.html#static-variable-mapByModelName",
-    "<span>mapByModelName</span> <span class=\"search-result-import-path\">loopback-connector-couchbase3/lib/couchbase3.js</span>",
-    "variable"
-  ],
-  [
     "loopback-connector-couchbase3/lib/utils.js~promisifyallresolvewithreturn",
     "function/index.html#static-function-promisifyAllResolveWithReturn",
     "<span>promisifyAllResolveWithReturn</span> <span class=\"search-result-import-path\">loopback-connector-couchbase3/lib/utils.js</span>",
     "function"
-  ],
-  [
-    "loopback-connector-couchbase3/lib/couchbase3.js~utils",
-    "variable/index.html#static-variable-utils",
-    "<span>utils</span> <span class=\"search-result-import-path\">loopback-connector-couchbase3/lib/couchbase3.js</span>",
-    "variable"
-  ],
-  [
-    "loopback-connector-couchbase3/lib/couchbase3.js~uuid",
-    "variable/index.html#static-variable-uuid",
-    "<span>uuid</span> <span class=\"search-result-import-path\">loopback-connector-couchbase3/lib/couchbase3.js</span>",
-    "variable"
   ],
   [
     "builtinexternal/ecmascriptexternal.js~array",
