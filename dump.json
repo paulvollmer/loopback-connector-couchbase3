@@ -1,0 +1,1937 @@
+[
+  {
+    "__docId__": 0,
+    "kind": "file",
+    "name": "lib/couchbase3.js",
+    "content": "'use strict';\n\n/*!\n * Module dependencies\n */\nconst debug = require('debug')('loopback:connector:couchbase3');\n\nconst couchbase = require('couchbase');\nconst Promise = require('bluebird');\nconst uuid = require('uuid');\nconst utils = require('./utils');\n\nconst NoSQL = require('loopback-connector-nosql');\nconst Accessor = NoSQL.Accessor;\n\n// The default design documents.\nconst mapByModelName = `function(doc, meta) {\n  if (doc._type) {\n    emit(doc._type, null);\n  }\n}`;\nconst defaultDesignDocs = {\n  connector: {\n    views: {\n      byModelName: {\n        map: mapByModelName\n      }\n    }\n  }\n};\n\n/**\n * The constructor for Couchbase connector\n *\n * @param {Object} settings The settings object\n * @param {DataSource} dataSource The data source instance\n * @constructor\n */\nclass Couchbase extends NoSQL {\n\n  /**\n   * ID type.\n   */\n  getDefaultIdType(prop) {\n    return String;\n  }\n\n  /**\n   * Connect to Couchbase\n   */\n  _connect(settings, database) {\n    // Cluster.\n    if (settings.cluster == null) {\n      settings.cluster = {};\n    }\n    if (settings.cluster.url == null) {\n      debug('Cluster URL settings missing; trying default');\n      settings.cluster.url = 'couchbase://localhost';\n    }\n    if (settings.cluster.options == null) {\n      settings.cluster.options = {};\n    }\n    // Bucket.\n    if (settings.bucket == null) {\n      settings.bucket = {};\n    }\n    if (settings.bucket.name == null) {\n      debug('Bucket name settings missing; trying default');\n      settings.bucket.name = 'default';\n    }\n    if (settings.bucket.password == null) {\n      settings.bucket.password = '';\n    }\n    // Cluster.\n    this._cluster = Promise.resolve(new couchbase.Cluster(settings.cluster.url, settings.cluster.options))\n      .then(utils.promisifyAllResolveWithReturn);\n    // A connection is established when a bucket is open.\n    // @see http://developer.couchbase.com/documentation/server/4.0/sdks/node-2.0/performance-tuning.html\n    return this._cluster.call('openBucketAsync', settings.bucket.name, settings.bucket.password)\n      .then((bucket) => {\n        if (settings.bucket.operationTimeout) {\n          bucket.operationTimeout = settings.bucket.operationTimeout;\n        }\n        return bucket;\n      })\n      .then(Promise.promisifyAll);\n  }\n\n  /**\n   * Disconnect from Couchbase\n   */\n  _disconnect(bucket) {\n    // Cleanup.\n    this._cluster = null;\n    this._manager = null;\n    // Disconnect.\n    return bucket.disconnect();\n  }\n\n  /**\n   * Ping db server.\n   */\n  ping(callback) {\n    let promise;\n    if (this._cluster == null) {\n      promise = Promise.reject(new Error('not connected'));\n    } else {\n      promise = this.connect().call('getAsync', '1').return(true).catch(function(err) {\n        if (err.message === 'The key does not exist on the server') {\n          return true;\n        }\n        return Promise.reject(err);\n      });\n    }\n    return promise.asCallback(callback);\n  }\n\n  /**\n   * ViewQuery APIs.\n   */\n\n  /**\n   * Shortcut.\n   */\n  view(designDoc, viewName, options) {\n    return this.runViewQuery(this.newViewQuery(designDoc, viewName, options));\n  }\n\n  /**\n   * Shortcut.\n   */\n  runViewQuery(query, params) {\n    return this.connect().call('queryAsync', query, params);\n  }\n\n  /**\n   * Build a new view query.\n   *\n   * @see http://docs.couchbase.com/sdk-api/couchbase-node-client-2.1.2/ViewQuery.html\n   * @param  {String} designDoc\n   * @param  {String} viewName\n   * @param  {Object} options\n   * @return {Object}\n   */\n  newViewQuery(designDoc, viewName, options) {\n    const ViewQuery = couchbase.ViewQuery;\n    // With some defaults.\n    let query = ViewQuery.from(designDoc, viewName)\n      .on_error(ViewQuery.ErrorMode.STOP)\n      .order(ViewQuery.Order.ASCENDING)\n      .stale(ViewQuery.Update.BEFORE);\n\n    if (options == null) {\n      return query;\n    }\n    // The SDK made it easier for some options formats.\n    // Call.\n    [\n      'stale', 'order', 'group', 'group_level', 'key', 'keys', 'include_docs', 'full_set', 'on_error', 'limit'\n    ].forEach((key) => {\n      if (options[key] != null) {\n        query = query[key].call(query, options[key]);\n        delete options[key];\n      }\n    });\n    // Apply.\n    ['range', 'id_range'].forEach((key) => {\n      if (options[key] != null) {\n        query = query[key].apply(query, options[key]);\n        delete options[key];\n      }\n    });\n    query = query.custom(options);\n    return query;\n  }\n\n  /**\n   * Bucket Manager APIs.\n   */\n\n  /**\n   * You don't need to use this directly usually. Use the APIs below.\n   *\n   * @private\n   */\n  manager() {\n    // Only one manager is needed.\n    if (this._manager == null) {\n      this._manager = this.connect().call('manager').then(Promise.promisifyAll);\n    };\n    return this._manager;\n  }\n\n  /**\n   * Shortcut.\n   */\n  getDesignDocument(name) {\n    return this.manager().call('getDesignDocumentAsync', name);\n  }\n\n  /**\n   * Shortcut.\n   */\n  getDesignDocuments() {\n    return this.manager().call('getDesignDocumentsAsync');\n  }\n\n  /**\n   * Shortcut.\n   */\n  insertDesignDocument(name, data) {\n    return this.manager().call('insertDesignDocumentAsync', name, data);\n  }\n\n  /**\n   * Shortcut.\n   */\n  removeDesignDocument(name) {\n    return this.manager().call('removeDesignDocumentAsync', name);\n  }\n\n  /**\n   * Shortcut.\n   */\n  upsertDesignDocument(name, data) {\n    return this.manager().call('upsertDesignDocumentAsync', name, data);\n  }\n\n  /**\n   * Cluster Manager APIs.\n   */\n\n  clusterManager(username, password) {\n    // Only one manager is needed.\n    if (this._clusterManager == null) {\n      this._clusterManager = this._cluster.call('manager', username, password).then(Promise.promisifyAll);\n    };\n    return this._clusterManager;\n  }\n\n  /**\n   * Operation hooks.\n   */\n\n  /**\n   * Implement `autoupdate()`.\n   *\n   * @see `DataSource.prototype.autoupdate()`\n   */\n  autoupdate(models, callback) {\n    debug('autoupdate', this.settings);\n    // Create views.\n    let designDocs = defaultDesignDocs;\n    if (this.settings.designDocs) {\n      designDocs = Object.assign({}, designDocs, this.settings.designDocs);\n    }\n    let promise = Promise.resolve(true);\n    for (let name in designDocs) {\n      promise = promise.then(() => {\n        return this.upsertDesignDocument(name, designDocs[name]).then((res) => {\n          debug('created design document', name, designDocs[name], res);\n          return res;\n        });\n      });\n    }\n    return promise.asCallback(callback);\n  }\n\n  /**\n   * Implement `automigrate()`.\n   *\n   * @see `DataSource.prototype.automigrate()`\n   *\n   * Not really useful. Usually we manage databases in other ways.\n   */\n  // automigrate(models, callback) {\n  //   debug('automigrate', this.settings.database);\n  // }\n\n}\n\n/**\n * Implement Accessor.\n */\nclass CouchbaseAccessor extends Accessor {\n\n  /**\n   * Save data to DB without a given id.\n   *\n   * Result is a promise with `[id, rev]` or an error.\n   */\n  postWithoutId(data, options) {\n    // Generate ID.\n    const id = uuid.v4();\n    return this.postWithId(id, data, options);\n  }\n\n  /**\n   * Save data to DB with a given id.\n   *\n   * Result is a promise with `[id, rev]` or an error.\n   */\n  postWithId(id, data, options) {\n    // Result need to be `id` and `res`.\n    return this.connection.call('insertAsync', id, data, options).then((res) => {\n      return [id, res.cas];\n    });\n  }\n\n  /**\n   * Save data to DB with a given id.\n   *\n   * Result is a promise with `[id, rev]` or an error.\n   */\n  putWithId(id, data, options) {\n    return this.connection.call('replaceAsync', id, data, options).then((res) => {\n      return [id, res.cas];\n    });\n  }\n\n  /**\n   * Destroy data from DB by id.\n   *\n   * Result is a promise with whatever or an error.\n   */\n  destroyById(id, options) {\n    return this.connection.call('removeAsync', id, options).return(true).catchReturn(false);\n  }\n\n  /**\n   * Find data from DB by id.\n   *\n   * Result is a promise with the data or an error.\n   */\n  findById(id, options) {\n    return this.connection.call('getAsync', id, options).then(this.unpackRes).then((data) => {\n      if (data == null) {\n        return Promise.reject(httpError(404));\n      }\n      return data;\n    });\n  }\n\n  /**\n   * Find all data from DB for a model.\n   *\n   * Result is a promise with an array of 0 to many `[id, data]`.\n   */\n  findAll(options) {\n    return this.connector.view('connector', 'byModelName', {\n      key: this.modelName\n    }).map((res) => {\n      return Promise.join(res.id, this.findById(res.id, options), (id, value) => {\n        return [id, value];\n      });\n    });\n  }\n\n  /**\n   * Convert data from model to DB format.\n   */\n  forDb(data) {\n    data = super.forDb(data);\n    // Save the model name.\n    data._type = this.modelName;\n    return data;\n  }\n\n  /**\n   * Convert data from DB format to model.\n   */\n  fromDb(data) {\n    data = super.fromDb(data);\n    // Remove DB only data.\n    if (data._type != null) {\n      delete data._type;\n    }\n    return data;\n  }\n\n  /**\n   * Helper.\n   *\n   * @param  {Object} data What the Bucket would return with the OpCallback()\n   * @return {Promise}     The unpacked data\n   */\n  unpackRes(data) {\n    // CAS is required.\n    if (data == null || data.cas == null) {\n      return Promise.resolve(null);\n    }\n    let unpacked = {};\n    // Values are extracted to the top level.\n    if (data.value != null) {\n      Object.assign(unpacked, data.value);\n    }\n    unpacked._cas = data.cas;\n    return Promise.resolve(unpacked);\n  }\n\n}\n\n// Export initializer.\nexports.initialize = NoSQL.initializer('couchbase3', Couchbase, CouchbaseAccessor);\n\n// Export classes.\nexports.Couchbase = Couchbase;\nexports.CouchbaseAccessor = CouchbaseAccessor;\n",
+    "static": true,
+    "longname": "lib/couchbase3.js",
+    "access": null,
+    "description": null,
+    "lineNumber": 1
+  },
+  {
+    "__docId__": 1,
+    "kind": "variable",
+    "name": "debug",
+    "memberof": "lib/couchbase3.js",
+    "static": true,
+    "longname": "lib/couchbase3.js~debug",
+    "access": null,
+    "export": false,
+    "importPath": "loopback-connector-couchbase3/lib/couchbase3.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 6,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 2,
+    "kind": "variable",
+    "name": "couchbase",
+    "memberof": "lib/couchbase3.js",
+    "static": true,
+    "longname": "lib/couchbase3.js~couchbase",
+    "access": null,
+    "export": false,
+    "importPath": "loopback-connector-couchbase3/lib/couchbase3.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 8,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 3,
+    "kind": "variable",
+    "name": "Promise",
+    "memberof": "lib/couchbase3.js",
+    "static": true,
+    "longname": "lib/couchbase3.js~Promise",
+    "access": null,
+    "export": false,
+    "importPath": "loopback-connector-couchbase3/lib/couchbase3.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 9,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 4,
+    "kind": "variable",
+    "name": "uuid",
+    "memberof": "lib/couchbase3.js",
+    "static": true,
+    "longname": "lib/couchbase3.js~uuid",
+    "access": null,
+    "export": false,
+    "importPath": "loopback-connector-couchbase3/lib/couchbase3.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 10,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 5,
+    "kind": "variable",
+    "name": "utils",
+    "memberof": "lib/couchbase3.js",
+    "static": true,
+    "longname": "lib/couchbase3.js~utils",
+    "access": null,
+    "export": false,
+    "importPath": "loopback-connector-couchbase3/lib/couchbase3.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 11,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 6,
+    "kind": "variable",
+    "name": "NoSQL",
+    "memberof": "lib/couchbase3.js",
+    "static": true,
+    "longname": "lib/couchbase3.js~NoSQL",
+    "access": null,
+    "export": false,
+    "importPath": "loopback-connector-couchbase3/lib/couchbase3.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 13,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 7,
+    "kind": "variable",
+    "name": "Accessor",
+    "memberof": "lib/couchbase3.js",
+    "static": true,
+    "longname": "lib/couchbase3.js~Accessor",
+    "access": null,
+    "export": false,
+    "importPath": "loopback-connector-couchbase3/lib/couchbase3.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 14,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 8,
+    "kind": "variable",
+    "name": "mapByModelName",
+    "memberof": "lib/couchbase3.js",
+    "static": true,
+    "longname": "lib/couchbase3.js~mapByModelName",
+    "access": null,
+    "export": false,
+    "importPath": "loopback-connector-couchbase3/lib/couchbase3.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 17,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "string"
+      ]
+    }
+  },
+  {
+    "__docId__": 9,
+    "kind": "variable",
+    "name": "defaultDesignDocs",
+    "memberof": "lib/couchbase3.js",
+    "static": true,
+    "longname": "lib/couchbase3.js~defaultDesignDocs",
+    "access": null,
+    "export": false,
+    "importPath": "loopback-connector-couchbase3/lib/couchbase3.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 22,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "{\"connector\": *}"
+      ]
+    }
+  },
+  {
+    "__docId__": 10,
+    "kind": "class",
+    "name": "Couchbase",
+    "memberof": "lib/couchbase3.js",
+    "static": true,
+    "longname": "lib/couchbase3.js~Couchbase",
+    "access": null,
+    "export": false,
+    "importPath": "loopback-connector-couchbase3/lib/couchbase3.js",
+    "importStyle": null,
+    "description": "The constructor for Couchbase connector",
+    "lineNumber": 39,
+    "unknown": [
+      {
+        "tagName": "@constructor",
+        "tagValue": ""
+      }
+    ],
+    "params": [
+      {
+        "nullable": null,
+        "types": [
+          "Object"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "settings",
+        "description": "The settings object"
+      },
+      {
+        "nullable": null,
+        "types": [
+          "DataSource"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "dataSource",
+        "description": "The data source instance"
+      }
+    ],
+    "interface": false,
+    "extends": [
+      "NoSQL"
+    ]
+  },
+  {
+    "__docId__": 11,
+    "kind": "method",
+    "name": "getDefaultIdType",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#getDefaultIdType",
+    "access": null,
+    "description": "ID type.",
+    "lineNumber": 44,
+    "params": [
+      {
+        "name": "prop",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 12,
+    "kind": "method",
+    "name": "_connect",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#_connect",
+    "access": null,
+    "description": "Connect to Couchbase",
+    "lineNumber": 51,
+    "params": [
+      {
+        "name": "settings",
+        "types": [
+          "*"
+        ]
+      },
+      {
+        "name": "database",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 13,
+    "kind": "member",
+    "name": "_cluster",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#_cluster",
+    "access": null,
+    "description": null,
+    "lineNumber": 75,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 14,
+    "kind": "method",
+    "name": "_disconnect",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#_disconnect",
+    "access": null,
+    "description": "Disconnect from Couchbase",
+    "lineNumber": 92,
+    "params": [
+      {
+        "name": "bucket",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 15,
+    "kind": "member",
+    "name": "_cluster",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#_cluster",
+    "access": null,
+    "description": null,
+    "lineNumber": 94,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 16,
+    "kind": "member",
+    "name": "_manager",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#_manager",
+    "access": null,
+    "description": null,
+    "lineNumber": 95,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 17,
+    "kind": "method",
+    "name": "ping",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#ping",
+    "access": null,
+    "description": "Ping db server.",
+    "lineNumber": 103,
+    "params": [
+      {
+        "name": "callback",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 18,
+    "kind": "method",
+    "name": "view",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#view",
+    "access": null,
+    "description": "Shortcut.",
+    "lineNumber": 125,
+    "params": [
+      {
+        "name": "designDoc",
+        "types": [
+          "*"
+        ]
+      },
+      {
+        "name": "viewName",
+        "types": [
+          "*"
+        ]
+      },
+      {
+        "name": "options",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 19,
+    "kind": "method",
+    "name": "runViewQuery",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#runViewQuery",
+    "access": null,
+    "description": "Shortcut.",
+    "lineNumber": 132,
+    "params": [
+      {
+        "name": "query",
+        "types": [
+          "*"
+        ]
+      },
+      {
+        "name": "params",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 20,
+    "kind": "method",
+    "name": "newViewQuery",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#newViewQuery",
+    "access": null,
+    "description": "Build a new view query.",
+    "see": [
+      "http://docs.couchbase.com/sdk-api/couchbase-node-client-2.1.2/ViewQuery.html"
+    ],
+    "lineNumber": 145,
+    "params": [
+      {
+        "nullable": null,
+        "types": [
+          "String"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "designDoc",
+        "description": ""
+      },
+      {
+        "nullable": null,
+        "types": [
+          "String"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "viewName",
+        "description": ""
+      },
+      {
+        "nullable": null,
+        "types": [
+          "Object"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "options",
+        "description": ""
+      }
+    ],
+    "return": {
+      "nullable": null,
+      "types": [
+        "Object"
+      ],
+      "spread": false,
+      "description": ""
+    }
+  },
+  {
+    "__docId__": 21,
+    "kind": "method",
+    "name": "manager",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#manager",
+    "access": "private",
+    "description": "You don't need to use this directly usually. Use the APIs below.",
+    "lineNumber": 186,
+    "params": [],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 22,
+    "kind": "member",
+    "name": "_manager",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#_manager",
+    "access": null,
+    "description": null,
+    "lineNumber": 189,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 23,
+    "kind": "method",
+    "name": "getDesignDocument",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#getDesignDocument",
+    "access": null,
+    "description": "Shortcut.",
+    "lineNumber": 197,
+    "params": [
+      {
+        "name": "name",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 24,
+    "kind": "method",
+    "name": "getDesignDocuments",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#getDesignDocuments",
+    "access": null,
+    "description": "Shortcut.",
+    "lineNumber": 204,
+    "params": [],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 25,
+    "kind": "method",
+    "name": "insertDesignDocument",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#insertDesignDocument",
+    "access": null,
+    "description": "Shortcut.",
+    "lineNumber": 211,
+    "params": [
+      {
+        "name": "name",
+        "types": [
+          "*"
+        ]
+      },
+      {
+        "name": "data",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 26,
+    "kind": "method",
+    "name": "removeDesignDocument",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#removeDesignDocument",
+    "access": null,
+    "description": "Shortcut.",
+    "lineNumber": 218,
+    "params": [
+      {
+        "name": "name",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 27,
+    "kind": "method",
+    "name": "upsertDesignDocument",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#upsertDesignDocument",
+    "access": null,
+    "description": "Shortcut.",
+    "lineNumber": 225,
+    "params": [
+      {
+        "name": "name",
+        "types": [
+          "*"
+        ]
+      },
+      {
+        "name": "data",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 28,
+    "kind": "method",
+    "name": "clusterManager",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#clusterManager",
+    "access": null,
+    "description": "Cluster Manager APIs.",
+    "lineNumber": 233,
+    "params": [
+      {
+        "name": "username",
+        "types": [
+          "*"
+        ]
+      },
+      {
+        "name": "password",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 29,
+    "kind": "member",
+    "name": "_clusterManager",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#_clusterManager",
+    "access": null,
+    "description": null,
+    "lineNumber": 236,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 30,
+    "kind": "method",
+    "name": "autoupdate",
+    "memberof": "lib/couchbase3.js~Couchbase",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~Couchbase#autoupdate",
+    "access": null,
+    "description": "Implement `autoupdate()`.",
+    "see": [
+      "`DataSource.prototype.autoupdate()`"
+    ],
+    "lineNumber": 250,
+    "params": [
+      {
+        "name": "models",
+        "types": [
+          "*"
+        ]
+      },
+      {
+        "name": "callback",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 31,
+    "kind": "class",
+    "name": "CouchbaseAccessor",
+    "memberof": "lib/couchbase3.js",
+    "static": true,
+    "longname": "lib/couchbase3.js~CouchbaseAccessor",
+    "access": null,
+    "export": false,
+    "importPath": "loopback-connector-couchbase3/lib/couchbase3.js",
+    "importStyle": null,
+    "description": "Implement Accessor.",
+    "lineNumber": 285,
+    "interface": false,
+    "extends": [
+      "Accessor"
+    ]
+  },
+  {
+    "__docId__": 32,
+    "kind": "method",
+    "name": "postWithoutId",
+    "memberof": "lib/couchbase3.js~CouchbaseAccessor",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~CouchbaseAccessor#postWithoutId",
+    "access": null,
+    "description": "Save data to DB without a given id.\n\nResult is a promise with `[id, rev]` or an error.",
+    "lineNumber": 292,
+    "params": [
+      {
+        "name": "data",
+        "types": [
+          "*"
+        ]
+      },
+      {
+        "name": "options",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 33,
+    "kind": "method",
+    "name": "postWithId",
+    "memberof": "lib/couchbase3.js~CouchbaseAccessor",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~CouchbaseAccessor#postWithId",
+    "access": null,
+    "description": "Save data to DB with a given id.\n\nResult is a promise with `[id, rev]` or an error.",
+    "lineNumber": 303,
+    "params": [
+      {
+        "name": "id",
+        "types": [
+          "*"
+        ]
+      },
+      {
+        "name": "data",
+        "types": [
+          "*"
+        ]
+      },
+      {
+        "name": "options",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 34,
+    "kind": "method",
+    "name": "putWithId",
+    "memberof": "lib/couchbase3.js~CouchbaseAccessor",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~CouchbaseAccessor#putWithId",
+    "access": null,
+    "description": "Save data to DB with a given id.\n\nResult is a promise with `[id, rev]` or an error.",
+    "lineNumber": 315,
+    "params": [
+      {
+        "name": "id",
+        "types": [
+          "*"
+        ]
+      },
+      {
+        "name": "data",
+        "types": [
+          "*"
+        ]
+      },
+      {
+        "name": "options",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 35,
+    "kind": "method",
+    "name": "destroyById",
+    "memberof": "lib/couchbase3.js~CouchbaseAccessor",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~CouchbaseAccessor#destroyById",
+    "access": null,
+    "description": "Destroy data from DB by id.\n\nResult is a promise with whatever or an error.",
+    "lineNumber": 326,
+    "params": [
+      {
+        "name": "id",
+        "types": [
+          "*"
+        ]
+      },
+      {
+        "name": "options",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 36,
+    "kind": "method",
+    "name": "findById",
+    "memberof": "lib/couchbase3.js~CouchbaseAccessor",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~CouchbaseAccessor#findById",
+    "access": null,
+    "description": "Find data from DB by id.\n\nResult is a promise with the data or an error.",
+    "lineNumber": 335,
+    "params": [
+      {
+        "name": "id",
+        "types": [
+          "*"
+        ]
+      },
+      {
+        "name": "options",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 37,
+    "kind": "method",
+    "name": "findAll",
+    "memberof": "lib/couchbase3.js~CouchbaseAccessor",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~CouchbaseAccessor#findAll",
+    "access": null,
+    "description": "Find all data from DB for a model.\n\nResult is a promise with an array of 0 to many `[id, data]`.",
+    "lineNumber": 349,
+    "params": [
+      {
+        "name": "options",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 38,
+    "kind": "method",
+    "name": "forDb",
+    "memberof": "lib/couchbase3.js~CouchbaseAccessor",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~CouchbaseAccessor#forDb",
+    "access": null,
+    "description": "Convert data from model to DB format.",
+    "lineNumber": 362,
+    "params": [
+      {
+        "name": "data",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 39,
+    "kind": "method",
+    "name": "fromDb",
+    "memberof": "lib/couchbase3.js~CouchbaseAccessor",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~CouchbaseAccessor#fromDb",
+    "access": null,
+    "description": "Convert data from DB format to model.",
+    "lineNumber": 372,
+    "params": [
+      {
+        "name": "data",
+        "types": [
+          "*"
+        ]
+      }
+    ],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 40,
+    "kind": "method",
+    "name": "unpackRes",
+    "memberof": "lib/couchbase3.js~CouchbaseAccessor",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "lib/couchbase3.js~CouchbaseAccessor#unpackRes",
+    "access": null,
+    "description": "Helper.",
+    "lineNumber": 387,
+    "params": [
+      {
+        "nullable": null,
+        "types": [
+          "Object"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "data",
+        "description": "What the Bucket would return with the OpCallback()"
+      }
+    ],
+    "return": {
+      "nullable": null,
+      "types": [
+        "Promise"
+      ],
+      "spread": false,
+      "description": "The unpacked data"
+    }
+  },
+  {
+    "__docId__": 41,
+    "kind": "file",
+    "name": "lib/utils.js",
+    "content": "'use strict';\n\nvar Promise = require('bluebird');\n\n/**\n * A special `promisifyAll`. The `openBucket()` method (in class `Cluster`) has both a return which\n * is the bucket, and a callback which is the error.\n *\n * @param  {Object} target\n * @return {Object}\n */\nexports.promisifyAllResolveWithReturn = function(target) {\n  return Promise.promisifyAll(target, {\n    promisifier: promisifier\n  });\n};\n\n/**\n * Helper.\n *\n * @param  {Function} originalMethod\n * @return {Function}\n * @private\n */\nfunction promisifier(originalMethod) {\n  return function promisified() {\n    var self = this;\n    var args = [].slice.call(arguments);\n    return new Promise(function(resolve, reject) {\n      var res;\n      args.push(function(err) {\n        if (err) {\n          return reject(err);\n        }\n        resolve(res);\n      });\n      res = originalMethod.apply(self, args);\n    });\n  };\n}\n",
+    "static": true,
+    "longname": "lib/utils.js",
+    "access": null,
+    "description": null,
+    "lineNumber": 1
+  },
+  {
+    "__docId__": 42,
+    "kind": "variable",
+    "name": "Promise",
+    "memberof": "lib/utils.js",
+    "static": true,
+    "longname": "lib/utils.js~Promise",
+    "access": null,
+    "export": false,
+    "importPath": "loopback-connector-couchbase3/lib/utils.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 3,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 43,
+    "kind": "function",
+    "name": "promisifyAllResolveWithReturn",
+    "memberof": "lib/utils.js",
+    "generator": false,
+    "async": false,
+    "static": true,
+    "longname": "lib/utils.js~promisifyAllResolveWithReturn",
+    "access": null,
+    "export": false,
+    "importPath": "loopback-connector-couchbase3/lib/utils.js",
+    "importStyle": null,
+    "description": "A special `promisifyAll`. The `openBucket()` method (in class `Cluster`) has both a return which\nis the bucket, and a callback which is the error.",
+    "lineNumber": 12,
+    "params": [
+      {
+        "nullable": null,
+        "types": [
+          "Object"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "target",
+        "description": ""
+      }
+    ],
+    "return": {
+      "nullable": null,
+      "types": [
+        "Object"
+      ],
+      "spread": false,
+      "description": ""
+    }
+  },
+  {
+    "__docId__": 44,
+    "kind": "function",
+    "name": "promisifier",
+    "memberof": "lib/utils.js",
+    "generator": false,
+    "async": false,
+    "static": true,
+    "longname": "lib/utils.js~promisifier",
+    "access": "private",
+    "export": false,
+    "importPath": "loopback-connector-couchbase3/lib/utils.js",
+    "importStyle": null,
+    "description": "Helper.",
+    "lineNumber": 25,
+    "params": [
+      {
+        "nullable": null,
+        "types": [
+          "Function"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "originalMethod",
+        "description": ""
+      }
+    ],
+    "return": {
+      "nullable": null,
+      "types": [
+        "Function"
+      ],
+      "spread": false,
+      "description": ""
+    }
+  },
+  {
+    "__docId__": 46,
+    "kind": "external",
+    "name": "Infinity",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Infinity",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Infinity",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 47,
+    "kind": "external",
+    "name": "NaN",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/NaN",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~NaN",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 48,
+    "kind": "external",
+    "name": "undefined",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/undefined",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~undefined",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 49,
+    "kind": "external",
+    "name": "null",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/null",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~null",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 50,
+    "kind": "external",
+    "name": "Object",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Object",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 51,
+    "kind": "external",
+    "name": "object",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~object",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 52,
+    "kind": "external",
+    "name": "Function",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Function",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 53,
+    "kind": "external",
+    "name": "function",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~function",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 54,
+    "kind": "external",
+    "name": "Boolean",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Boolean",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Boolean",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 55,
+    "kind": "external",
+    "name": "boolean",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Boolean",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~boolean",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 56,
+    "kind": "external",
+    "name": "Symbol",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Symbol",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 57,
+    "kind": "external",
+    "name": "Error",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Error",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 58,
+    "kind": "external",
+    "name": "EvalError",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/EvalError",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~EvalError",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 59,
+    "kind": "external",
+    "name": "InternalError",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/InternalError",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~InternalError",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 60,
+    "kind": "external",
+    "name": "RangeError",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RangeError",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~RangeError",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 61,
+    "kind": "external",
+    "name": "ReferenceError",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ReferenceError",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~ReferenceError",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 62,
+    "kind": "external",
+    "name": "SyntaxError",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SyntaxError",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~SyntaxError",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 63,
+    "kind": "external",
+    "name": "TypeError",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypeError",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~TypeError",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 64,
+    "kind": "external",
+    "name": "URIError",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/URIError",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~URIError",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 65,
+    "kind": "external",
+    "name": "Number",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Number",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 66,
+    "kind": "external",
+    "name": "number",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~number",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 67,
+    "kind": "external",
+    "name": "Date",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Date",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 68,
+    "kind": "external",
+    "name": "String",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~String",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 69,
+    "kind": "external",
+    "name": "string",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~string",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 70,
+    "kind": "external",
+    "name": "RegExp",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~RegExp",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 71,
+    "kind": "external",
+    "name": "Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 72,
+    "kind": "external",
+    "name": "Int8Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Int8Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Int8Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 73,
+    "kind": "external",
+    "name": "Uint8Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Uint8Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 74,
+    "kind": "external",
+    "name": "Uint8ClampedArray",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8ClampedArray",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Uint8ClampedArray",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 75,
+    "kind": "external",
+    "name": "Int16Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Int16Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Int16Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 76,
+    "kind": "external",
+    "name": "Uint16Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint16Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Uint16Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 77,
+    "kind": "external",
+    "name": "Int32Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Int32Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Int32Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 78,
+    "kind": "external",
+    "name": "Uint32Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint32Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Uint32Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 79,
+    "kind": "external",
+    "name": "Float32Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Float32Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Float32Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 80,
+    "kind": "external",
+    "name": "Float64Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Float64Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Float64Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 81,
+    "kind": "external",
+    "name": "Map",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Map",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 82,
+    "kind": "external",
+    "name": "Set",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Set",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 83,
+    "kind": "external",
+    "name": "WeakMap",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakMap",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~WeakMap",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 84,
+    "kind": "external",
+    "name": "WeakSet",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakSet",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~WeakSet",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 85,
+    "kind": "external",
+    "name": "ArrayBuffer",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~ArrayBuffer",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 86,
+    "kind": "external",
+    "name": "DataView",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/DataView",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~DataView",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 87,
+    "kind": "external",
+    "name": "JSON",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~JSON",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 88,
+    "kind": "external",
+    "name": "Promise",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Promise",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 89,
+    "kind": "external",
+    "name": "Generator",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Generator",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Generator",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 90,
+    "kind": "external",
+    "name": "GeneratorFunction",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/GeneratorFunction",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~GeneratorFunction",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 91,
+    "kind": "external",
+    "name": "Reflect",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Reflect",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Reflect",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 92,
+    "kind": "external",
+    "name": "Proxy",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Proxy",
+    "access": null,
+    "description": "",
+    "lineNumber": 193,
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 94,
+    "kind": "external",
+    "name": "CanvasRenderingContext2D",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D",
+    "memberof": "BuiltinExternal/WebAPIExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/WebAPIExternal.js~CanvasRenderingContext2D",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 95,
+    "kind": "external",
+    "name": "DocumentFragment",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/API/DocumentFragment",
+    "memberof": "BuiltinExternal/WebAPIExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/WebAPIExternal.js~DocumentFragment",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 96,
+    "kind": "external",
+    "name": "Element",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/API/Element",
+    "memberof": "BuiltinExternal/WebAPIExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/WebAPIExternal.js~Element",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 97,
+    "kind": "external",
+    "name": "Event",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/API/Event",
+    "memberof": "BuiltinExternal/WebAPIExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/WebAPIExternal.js~Event",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 98,
+    "kind": "external",
+    "name": "Node",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/API/Node",
+    "memberof": "BuiltinExternal/WebAPIExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/WebAPIExternal.js~Node",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 99,
+    "kind": "external",
+    "name": "NodeList",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/API/NodeList",
+    "memberof": "BuiltinExternal/WebAPIExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/WebAPIExternal.js~NodeList",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 100,
+    "kind": "external",
+    "name": "XMLHttpRequest",
+    "externalLink": "https://developer.mozilla.org/en/docs/Web/API/XMLHttpRequest",
+    "memberof": "BuiltinExternal/WebAPIExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/WebAPIExternal.js~XMLHttpRequest",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 101,
+    "kind": "external",
+    "name": "AudioContext",
+    "externalLink": "https://developer.mozilla.org/en/docs/Web/API/AudioContext",
+    "memberof": "BuiltinExternal/WebAPIExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/WebAPIExternal.js~AudioContext",
+    "access": null,
+    "description": "",
+    "lineNumber": 34,
+    "builtinExternal": true
+  }
+]

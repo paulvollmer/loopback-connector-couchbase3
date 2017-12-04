@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <base data-ice="baseUrl" href="../../">
+  <title data-ice="title">lib/couchbase3.js | esdoc-example API Document</title>
+  <link type="text/css" rel="stylesheet" href="css/style.css">
+  <link type="text/css" rel="stylesheet" href="css/prettify-tomorrow.css">
+  <script src="script/prettify/prettify.js"></script>
+  
+  
+  <script src="script/manual.js"></script>
+</head>
+<body class="layout-container" data-ice="rootContainer">
+
+<header>
+  <a href="./">Home</a>
+  
+  <a href="identifiers.html">Reference</a>
+  <a href="source.html">Source</a>
+  
+  <a data-ice="repoURL" href="https://github.com/Wiredcraft/loopback-connector-couchbase3" class="repo-url-github">Repository</a>
+  <div class="search-box">
+  <span>
+    <img src="./image/search.png">
+    <span class="search-input-edge"></span><input class="search-input"><span class="search-input-edge"></span>
+  </span>
+    <ul class="search-result"></ul>
+  </div>
+</header>
+
+<nav class="navigation" data-ice="nav"><div>
+  <ul>
+    
+  <li data-ice="doc"><span data-ice="kind" class="kind-class">C</span><span data-ice="name"><span><a href="class/lib/couchbase3.js~Couchbase.html">Couchbase</a></span></span></li>
+<li data-ice="doc"><span data-ice="kind" class="kind-class">C</span><span data-ice="name"><span><a href="class/lib/couchbase3.js~CouchbaseAccessor.html">CouchbaseAccessor</a></span></span></li>
+<li data-ice="doc"><span data-ice="kind" class="kind-function">F</span><span data-ice="name"><span><a href="function/index.html#static-function-promisifyAllResolveWithReturn">promisifyAllResolveWithReturn</a></span></span></li>
+<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-Accessor">Accessor</a></span></span></li>
+<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-NoSQL">NoSQL</a></span></span></li>
+<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-Promise">Promise</a></span></span></li>
+<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-couchbase">couchbase</a></span></span></li>
+<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-debug">debug</a></span></span></li>
+<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-defaultDesignDocs">defaultDesignDocs</a></span></span></li>
+<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-mapByModelName">mapByModelName</a></span></span></li>
+<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-utils">utils</a></span></span></li>
+<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-uuid">uuid</a></span></span></li>
+<li data-ice="doc"><span data-ice="kind" class="kind-variable">V</span><span data-ice="name"><span><a href="variable/index.html#static-variable-Promise">Promise</a></span></span></li>
+</ul>
+</div>
+</nav>
+
+<div class="content" data-ice="content"><h1 data-ice="title">lib/couchbase3.js</h1>
+<pre class="source-code line-number raw-source-code"><code class="prettyprint linenums" data-ice="content">&apos;use strict&apos;;
+
+/*!
+ * Module dependencies
+ */
+const debug = require(&apos;debug&apos;)(&apos;loopback:connector:couchbase3&apos;);
+
+const couchbase = require(&apos;couchbase&apos;);
+const Promise = require(&apos;bluebird&apos;);
+const uuid = require(&apos;uuid&apos;);
+const utils = require(&apos;./utils&apos;);
+
+const NoSQL = require(&apos;loopback-connector-nosql&apos;);
+const Accessor = NoSQL.Accessor;
+
+// The default design documents.
+const mapByModelName = `function(doc, meta) {
+  if (doc._type) {
+    emit(doc._type, null);
+  }
+}`;
+const defaultDesignDocs = {
+  connector: {
+    views: {
+      byModelName: {
+        map: mapByModelName
+      }
+    }
+  }
+};
+
+/**
+ * The constructor for Couchbase connector
+ *
+ * @param {Object} settings The settings object
+ * @param {DataSource} dataSource The data source instance
+ * @constructor
+ */
+class Couchbase extends NoSQL {
+
+  /**
+   * ID type.
+   */
+  getDefaultIdType(prop) {
+    return String;
+  }
+
+  /**
+   * Connect to Couchbase
+   */
+  _connect(settings, database) {
+    // Cluster.
+    if (settings.cluster == null) {
+      settings.cluster = {};
+    }
+    if (settings.cluster.url == null) {
+      debug(&apos;Cluster URL settings missing; trying default&apos;);
+      settings.cluster.url = &apos;couchbase://localhost&apos;;
+    }
+    if (settings.cluster.options == null) {
+      settings.cluster.options = {};
+    }
+    // Bucket.
+    if (settings.bucket == null) {
+      settings.bucket = {};
+    }
+    if (settings.bucket.name == null) {
+      debug(&apos;Bucket name settings missing; trying default&apos;);
+      settings.bucket.name = &apos;default&apos;;
+    }
+    if (settings.bucket.password == null) {
+      settings.bucket.password = &apos;&apos;;
+    }
+    // Cluster.
+    this._cluster = Promise.resolve(new couchbase.Cluster(settings.cluster.url, settings.cluster.options))
+      .then(utils.promisifyAllResolveWithReturn);
+    // A connection is established when a bucket is open.
+    // @see http://developer.couchbase.com/documentation/server/4.0/sdks/node-2.0/performance-tuning.html
+    return this._cluster.call(&apos;openBucketAsync&apos;, settings.bucket.name, settings.bucket.password)
+      .then((bucket) =&gt; {
+        if (settings.bucket.operationTimeout) {
+          bucket.operationTimeout = settings.bucket.operationTimeout;
+        }
+        return bucket;
+      })
+      .then(Promise.promisifyAll);
+  }
+
+  /**
+   * Disconnect from Couchbase
+   */
+  _disconnect(bucket) {
+    // Cleanup.
+    this._cluster = null;
+    this._manager = null;
+    // Disconnect.
+    return bucket.disconnect();
+  }
+
+  /**
+   * Ping db server.
+   */
+  ping(callback) {
+    let promise;
+    if (this._cluster == null) {
+      promise = Promise.reject(new Error(&apos;not connected&apos;));
+    } else {
+      promise = this.connect().call(&apos;getAsync&apos;, &apos;1&apos;).return(true).catch(function(err) {
+        if (err.message === &apos;The key does not exist on the server&apos;) {
+          return true;
+        }
+        return Promise.reject(err);
+      });
+    }
+    return promise.asCallback(callback);
+  }
+
+  /**
+   * ViewQuery APIs.
+   */
+
+  /**
+   * Shortcut.
+   */
+  view(designDoc, viewName, options) {
+    return this.runViewQuery(this.newViewQuery(designDoc, viewName, options));
+  }
+
+  /**
+   * Shortcut.
+   */
+  runViewQuery(query, params) {
+    return this.connect().call(&apos;queryAsync&apos;, query, params);
+  }
+
+  /**
+   * Build a new view query.
+   *
+   * @see http://docs.couchbase.com/sdk-api/couchbase-node-client-2.1.2/ViewQuery.html
+   * @param  {String} designDoc
+   * @param  {String} viewName
+   * @param  {Object} options
+   * @return {Object}
+   */
+  newViewQuery(designDoc, viewName, options) {
+    const ViewQuery = couchbase.ViewQuery;
+    // With some defaults.
+    let query = ViewQuery.from(designDoc, viewName)
+      .on_error(ViewQuery.ErrorMode.STOP)
+      .order(ViewQuery.Order.ASCENDING)
+      .stale(ViewQuery.Update.BEFORE);
+
+    if (options == null) {
+      return query;
+    }
+    // The SDK made it easier for some options formats.
+    // Call.
+    [
+      &apos;stale&apos;, &apos;order&apos;, &apos;group&apos;, &apos;group_level&apos;, &apos;key&apos;, &apos;keys&apos;, &apos;include_docs&apos;, &apos;full_set&apos;, &apos;on_error&apos;, &apos;limit&apos;
+    ].forEach((key) =&gt; {
+      if (options[key] != null) {
+        query = query[key].call(query, options[key]);
+        delete options[key];
+      }
+    });
+    // Apply.
+    [&apos;range&apos;, &apos;id_range&apos;].forEach((key) =&gt; {
+      if (options[key] != null) {
+        query = query[key].apply(query, options[key]);
+        delete options[key];
+      }
+    });
+    query = query.custom(options);
+    return query;
+  }
+
+  /**
+   * Bucket Manager APIs.
+   */
+
+  /**
+   * You don&apos;t need to use this directly usually. Use the APIs below.
+   *
+   * @private
+   */
+  manager() {
+    // Only one manager is needed.
+    if (this._manager == null) {
+      this._manager = this.connect().call(&apos;manager&apos;).then(Promise.promisifyAll);
+    };
+    return this._manager;
+  }
+
+  /**
+   * Shortcut.
+   */
+  getDesignDocument(name) {
+    return this.manager().call(&apos;getDesignDocumentAsync&apos;, name);
+  }
+
+  /**
+   * Shortcut.
+   */
+  getDesignDocuments() {
+    return this.manager().call(&apos;getDesignDocumentsAsync&apos;);
+  }
+
+  /**
+   * Shortcut.
+   */
+  insertDesignDocument(name, data) {
+    return this.manager().call(&apos;insertDesignDocumentAsync&apos;, name, data);
+  }
+
+  /**
+   * Shortcut.
+   */
+  removeDesignDocument(name) {
+    return this.manager().call(&apos;removeDesignDocumentAsync&apos;, name);
+  }
+
+  /**
+   * Shortcut.
+   */
+  upsertDesignDocument(name, data) {
+    return this.manager().call(&apos;upsertDesignDocumentAsync&apos;, name, data);
+  }
+
+  /**
+   * Cluster Manager APIs.
+   */
+
+  clusterManager(username, password) {
+    // Only one manager is needed.
+    if (this._clusterManager == null) {
+      this._clusterManager = this._cluster.call(&apos;manager&apos;, username, password).then(Promise.promisifyAll);
+    };
+    return this._clusterManager;
+  }
+
+  /**
+   * Operation hooks.
+   */
+
+  /**
+   * Implement `autoupdate()`.
+   *
+   * @see `DataSource.prototype.autoupdate()`
+   */
+  autoupdate(models, callback) {
+    debug(&apos;autoupdate&apos;, this.settings);
+    // Create views.
+    let designDocs = defaultDesignDocs;
+    if (this.settings.designDocs) {
+      designDocs = Object.assign({}, designDocs, this.settings.designDocs);
+    }
+    let promise = Promise.resolve(true);
+    for (let name in designDocs) {
+      promise = promise.then(() =&gt; {
+        return this.upsertDesignDocument(name, designDocs[name]).then((res) =&gt; {
+          debug(&apos;created design document&apos;, name, designDocs[name], res);
+          return res;
+        });
+      });
+    }
+    return promise.asCallback(callback);
+  }
+
+  /**
+   * Implement `automigrate()`.
+   *
+   * @see `DataSource.prototype.automigrate()`
+   *
+   * Not really useful. Usually we manage databases in other ways.
+   */
+  // automigrate(models, callback) {
+  //   debug(&apos;automigrate&apos;, this.settings.database);
+  // }
+
+}
+
+/**
+ * Implement Accessor.
+ */
+class CouchbaseAccessor extends Accessor {
+
+  /**
+   * Save data to DB without a given id.
+   *
+   * Result is a promise with `[id, rev]` or an error.
+   */
+  postWithoutId(data, options) {
+    // Generate ID.
+    const id = uuid.v4();
+    return this.postWithId(id, data, options);
+  }
+
+  /**
+   * Save data to DB with a given id.
+   *
+   * Result is a promise with `[id, rev]` or an error.
+   */
+  postWithId(id, data, options) {
+    // Result need to be `id` and `res`.
+    return this.connection.call(&apos;insertAsync&apos;, id, data, options).then((res) =&gt; {
+      return [id, res.cas];
+    });
+  }
+
+  /**
+   * Save data to DB with a given id.
+   *
+   * Result is a promise with `[id, rev]` or an error.
+   */
+  putWithId(id, data, options) {
+    return this.connection.call(&apos;replaceAsync&apos;, id, data, options).then((res) =&gt; {
+      return [id, res.cas];
+    });
+  }
+
+  /**
+   * Destroy data from DB by id.
+   *
+   * Result is a promise with whatever or an error.
+   */
+  destroyById(id, options) {
+    return this.connection.call(&apos;removeAsync&apos;, id, options).return(true).catchReturn(false);
+  }
+
+  /**
+   * Find data from DB by id.
+   *
+   * Result is a promise with the data or an error.
+   */
+  findById(id, options) {
+    return this.connection.call(&apos;getAsync&apos;, id, options).then(this.unpackRes).then((data) =&gt; {
+      if (data == null) {
+        return Promise.reject(httpError(404));
+      }
+      return data;
+    });
+  }
+
+  /**
+   * Find all data from DB for a model.
+   *
+   * Result is a promise with an array of 0 to many `[id, data]`.
+   */
+  findAll(options) {
+    return this.connector.view(&apos;connector&apos;, &apos;byModelName&apos;, {
+      key: this.modelName
+    }).map((res) =&gt; {
+      return Promise.join(res.id, this.findById(res.id, options), (id, value) =&gt; {
+        return [id, value];
+      });
+    });
+  }
+
+  /**
+   * Convert data from model to DB format.
+   */
+  forDb(data) {
+    data = super.forDb(data);
+    // Save the model name.
+    data._type = this.modelName;
+    return data;
+  }
+
+  /**
+   * Convert data from DB format to model.
+   */
+  fromDb(data) {
+    data = super.fromDb(data);
+    // Remove DB only data.
+    if (data._type != null) {
+      delete data._type;
+    }
+    return data;
+  }
+
+  /**
+   * Helper.
+   *
+   * @param  {Object} data What the Bucket would return with the OpCallback()
+   * @return {Promise}     The unpacked data
+   */
+  unpackRes(data) {
+    // CAS is required.
+    if (data == null || data.cas == null) {
+      return Promise.resolve(null);
+    }
+    let unpacked = {};
+    // Values are extracted to the top level.
+    if (data.value != null) {
+      Object.assign(unpacked, data.value);
+    }
+    unpacked._cas = data.cas;
+    return Promise.resolve(unpacked);
+  }
+
+}
+
+// Export initializer.
+exports.initialize = NoSQL.initializer(&apos;couchbase3&apos;, Couchbase, CouchbaseAccessor);
+
+// Export classes.
+exports.Couchbase = Couchbase;
+exports.CouchbaseAccessor = CouchbaseAccessor;
+</code></pre>
+
+</div>
+
+<footer class="footer">
+  Generated by <a href="https://esdoc.org">ESDoc<span data-ice="esdocVersion">(0.5.2)</span><img src="./image/esdoc-logo-mini-black.png"></a>
+</footer>
+
+<script src="script/search_index.js"></script>
+<script src="script/search.js"></script>
+<script src="script/pretty-print.js"></script>
+<script src="script/inherited-summary.js"></script>
+<script src="script/test-summary.js"></script>
+<script src="script/inner-link.js"></script>
+<script src="script/patch-for-local.js"></script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+{
+  "name": "loopback-connector-couchbase3",
+  "version": "0.5.0",
+  "description": "LoopBack Couchbase 3.x Connector",
+  "author": {
+    "name": "Wiredcraft",
+    "email": "info@wiredcraft.com",
+    "url": "http://wiredcraft.com"
+  },
+  "contributors": [
+    "Makara Wang",
+    "Charlie Li",
+    "Chopper Lee"
+  ],
+  "keywords": [
+    "LoopBack",
+    "Couchbase",
+    "DataSource",
+    "Connector"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Wiredcraft/loopback-connector-couchbase3"
+  },
+  "bugs": {
+    "url": "https://github.com/Wiredcraft/loopback-connector-couchbase3/issues"
+  },
+  "homepage": "https://github.com/Wiredcraft/loopback-connector-couchbase3",
+  "dependencies": {
+    "bluebird": "^3.5.1",
+    "couchbase": "^2.4.2",
+    "debug": "^3.1.0",
+    "loopback-connector": "^4.4.0",
+    "loopback-connector-nosql": "^0.2.0",
+    "uuid": "^3.1.0"
+  },
+  "devDependencies": {
+    "benchmark": "^2.1.4",
+    "coveralls": "^3.0.0",
+    "esdoc": "^0.5.2",
+    "istanbul": "^0.4.5",
+    "jscs": "^3.0.7",
+    "loopback-datasource-juggler": "^3.13.0",
+    "mocha": "^4.0.1",
+    "should": "^13.1.3"
+  },
+  "scripts": {
+    "benchmarks": "make benchmarks",
+    "test": "make test"
+  }
+}
